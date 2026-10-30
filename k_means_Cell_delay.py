@@ -1,7 +1,7 @@
 """K-means for pre-routing CELL DELAY prediction on the TimingPredict graphs.
 
-Same scikit-learn model, heads, search, scoring and plots as
-k_means_numpy_variation.py (imported from it); only the task differs.  One
+Same scikit-learn model, heads, search, scoring and plots as the net-delay
+script (loaded from the path in paths.py); only the task differs.  One
 sample per cell arc (cell input pin -> cell output pin, the `cell_out` edges);
 the label is the arc's delay 4-vector `e_cell_delays` = [E_rise, E_fall,
 L_rise, L_fall] in ns, scored in ns as train_gnn.py trains it.  Heads are
@@ -29,14 +29,24 @@ Feature sets
   lut_sta_ctx    lut_sta_a1 + input pin cap, arcs per output pin, table means
 
 Classes: 5 equal-frequency bins of max(L_rise, L_fall).  Results go to
-results/k_means_Cell_delay_numpy_variation/.
+results/k_means_Cell_delay/.
 
-    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_Cell_delay_numpy_variation.py            # full search
-    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_Cell_delay_numpy_variation.py --quick    # 7 small designs
+    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_Cell_delay.py            # full search
+    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_Cell_delay.py --quick    # 7 small designs
 """
+import importlib.util
+import os
+
 import numpy as np
 
-import k_means_numpy_variation as km     # its paths block holds every path this script uses
+import paths
+
+# the shared k-means engine (search, scoring, plots) lives in the net-delay script;
+# load it from the path in paths.py, so renaming it only means editing paths.py
+net_delay_file, _ = paths.paths().dependency_paths()
+spec = importlib.util.spec_from_file_location('km', net_delay_file)
+km = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(km)
 
 LUT = 7
 N_SLOT = 8                          # [E, L] x [cell_rise, cell_fall, rise_transition, fall_transition]
@@ -213,4 +223,4 @@ class CellDelayTask:
 
 
 if __name__ == '__main__':
-    km.main(CellDelayTask(), 'k_means_Cell_delay_numpy_variation')
+    km.main(CellDelayTask(), os.path.splitext(os.path.basename(__file__))[0])   # results/<this file's name>/

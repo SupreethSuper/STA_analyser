@@ -5,8 +5,8 @@ MiniBatchKMeans, StandardScaler, NearestNeighbors, KNeighborsRegressor, Ridge)
 and the scores (r2_score, confusion_matrix, f1_score, ...), numpy for the
 array work.  Two scripts share it:
 
-    k_means_numpy_variation.py               net delay  (this file)
-    k_means_Cell_delay_numpy_variation.py    cell delay (imports this file)
+    k_means_net_delay.py     net delay  (this file)
+    k_means_Cell_delay.py    cell delay (imports this file)
 
 The task.  One sample per net arc (driver pin -> sink pin) of data/8_rat; the
 label is the arc's wire delay 4-vector [E_rise, E_fall, L_rise, L_fall] and
@@ -38,8 +38,8 @@ regression head's prediction is binned the same way.
 Run with the project venv; the per-design feature cache needs torch/dgl once,
 after that only numpy, sklearn and matplotlib:
 
-    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_numpy_variation.py            # full search
-    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_numpy_variation.py --quick    # 7 small designs, small grid
+    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_net_delay.py            # full search
+    ..\\TimingPredict\\.venv312\\Scripts\\python.exe k_means_net_delay.py --quick    # 7 small designs, small grid
 """
 import argparse
 import csv
@@ -60,18 +60,10 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score,
 from sklearn.neighbors import KNeighborsRegressor, NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
-# ---- paths: relative to this file's folder (STA_analyser/) ----
-dataset_path = r"../TimingPredict/data/8_rat"    # <design>.graph.bin
-cache_path   = r"../TimingPredict/cache/kmeans"  # feature cache *.npz
-tee_path     = r"../TimingPredict"               # folder holding tee.py
-result_path  = r"./results"                      # run outputs
+import paths
 
-# anchor them to this file, so the launch folder doesn't matter
-script_dir   = os.path.dirname(os.path.abspath(__file__))
-dataset_path = os.path.join(script_dir, dataset_path)
-cache_path   = os.path.join(script_dir, cache_path)
-tee_path     = os.path.join(script_dir, tee_path)
-result_path  = os.path.join(script_dir, result_path)
+# ---- every path is declared in paths.py ----
+dataset_path, cache_path, tee_path, result_path = paths.paths().dataset_files()
 
 sys.path.append(tee_path)   # so `import tee` finds TimingPredict/tee.py
 import tee  # noqa: E402
@@ -804,7 +796,7 @@ class Runner:
         self.run_cfg(k5, 'k5')
         _, info5 = self.fit_eval(k5, self.train, {'test': self.test}, keep=True)
         self.artifacts(sel, trad, cfg, info, hist, info5)
-        log('done in {:.1f} min; results in {}'.format((time.time() - self.t0) / 60, os.path.relpath(self.out, script_dir)))
+        log('done in {:.1f} min; results in {}'.format((time.time() - self.t0) / 60, os.path.relpath(self.out, paths.STA_ANALYSER_DIR)))
 
     def artifacts(self, sel, trad, cfg, info, hist, info5):
         task, out = self.task, self.out
@@ -1137,4 +1129,4 @@ def main(task, script):
 
 
 if __name__ == '__main__':
-    main(NetDelayTask(), 'k_means_numpy_variation')
+    main(NetDelayTask(), os.path.splitext(os.path.basename(__file__))[0])   # results/<this file's name>/

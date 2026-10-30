@@ -71,8 +71,38 @@ def _check_siblings() -> None:
 _check_siblings()
 
 
+def _here(p):
+    """A path written relative to this folder (STA_analyser/), made absolute."""
+    return str((STA_ANALYSER_DIR / p).resolve())
+
+
+class paths():
+    """File paths of the k-means scripts, relative to this folder (STA_analyser/).
+
+    Usage:
+        import paths
+        net_delay_file, cell_delay_file = paths.paths().dependency_paths()
+        dataset_path, cache_path, tee_path, result_path = paths.paths().dataset_files()
+    """
+
+    def dependency_paths(self):
+        net_delay_file  = r"k_means_net_delay.py"     # also holds the shared k-means engine
+        cell_delay_file = r"k_means_Cell_delay.py"
+        return _here(net_delay_file), _here(cell_delay_file)
+
+    def dataset_files(self):
+        dataset_path = r"../TimingPredict/data/8_rat"    # <design>.graph.bin
+        cache_path   = r"../TimingPredict/cache/kmeans"  # feature cache *.npz
+        tee_path     = r"../TimingPredict"               # folder holding tee.py
+        result_path  = r"./results"                      # run outputs
+        return _here(dataset_path), _here(cache_path), _here(tee_path), _here(result_path)
+
+
 if __name__ == "__main__":
     # Smoke test: `python paths.py` from inside STA_analyser/
     for name, p in _REQUIRED_SIBLINGS.items():
         print(f"[OK] {name}: {p}")
     print("All sibling folders found.")
+    names = ("net_delay_file", "cell_delay_file", "dataset_path", "cache_path", "tee_path", "result_path")
+    for name, p in zip(names, paths().dependency_paths() + paths().dataset_files()):
+        print(f"[{'OK' if Path(p).exists() else 'MISSING'}] {name}: {p}")
