@@ -1,0 +1,22 @@
+
+# Create environment
+conda create -n timingpredict python=3.12 -y
+conda activate timingpredict
+
+# Upgrade pip
+python -m pip install --upgrade pip
+
+# PyTorch CPU
+python -m pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cpu
+
+# DGL and GraphBolt dependencies
+python -m pip install dgl==2.2.1 torchdata==0.7.1 PyYAML pydantic
+
+# Scientific computing
+python -m pip install numpy==1.26.4 pandas==2.2.3 scipy==1.14.1 contourpy==1.3.1 scikit-learn==1.5.2
+
+# Visualization and utilities
+python -m pip install matplotlib==3.9.2 seaborn networkx psutil requests tqdm joblib
+
+# Verify dependencies
+python -m pip check
