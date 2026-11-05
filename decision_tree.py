@@ -1,4 +1,12 @@
-"""Train decision trees for the existing net- and cell-delay features."""
+"""Train decision trees for the existing net- and cell-delay features.
+
+The K-means modules provide feature extraction and their shared fixed design
+split. This script uses the extracted features directly for classification:
+five delay classes are defined by training-only quantiles, tree settings are
+selected with design-grouped cross-validation, and the final models are
+evaluated on the seven held-out designs. Results for each task are written
+under results/net_delay and results/cell_delay.
+"""
 
 import csv
 import importlib.util
@@ -17,15 +25,19 @@ from sklearn.tree import DecisionTreeClassifier, plot_tree
 import paths
 
 
+# Class IDs are zero-based for scikit-learn; the corresponding display names
+# are one-based to match the C1-C5 convention used in the project.
 N_CLASSES = 5
 CLASS_IDS = np.arange(N_CLASSES)
 CLASS_LABELS = ["C1", "C2", "C3", "C4", "C5"]
 CV_FOLDS = 3
+# Bound cross-validation cost on very large designs. This does not limit the
+# final training fit or held-out evaluation, which use every sample.
 CV_SAMPLE_CAP = 40000
 SEED = 42
 
-# The template's settings remain a candidate; design-grouped CV selects among
-# these alternatives without consulting the seven held-out designs.
+# Include the template's parameters as a candidate and compare alternatives
+# using only training-design folds, never the held-out test designs.
 TREE_CONFIGS = [
     {"criterion": criterion, "max_depth": depth, "min_samples_split": split,
      "min_samples_leaf": leaf, "random_state": SEED}
@@ -40,18 +52,26 @@ TREE_CONFIGS = [
 
 
 def _load_module(name, file_path):
+    """Load an extractor from its configured path without requiring a package."""
     spec = importlib.util.spec_from_file_location(name, file_path)
     if spec is None or spec.loader is None:
         raise ImportError("Cannot load feature extractor from {}".format(file_path))
     module = importlib.util.module_from_spec(spec)
+    # Register first so module-level imports/dataclasses can resolve the module
+    # while its source executes.
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
 def _load_design(task, engine, design, feature_names):
+    """Get one design's ordered feature matrix and the delay used for classes."""
+    # load_block owns the extractor's feature cache; the requested feature order
+    # is the order declared by that task's feature-set definition.
     block = engine.load_block(task, design)
     X = np.column_stack([block["cols"][name] for name in feature_names])
+    # The task chooses the class-defining delay statistic (currently the worse
+    # late-corner rise/fall delay), keeping labels aligned with K-means.
     delay_ns = np.asarray(task.class_value(block["y"]), dtype=np.float32)
     if X.ndim != 2 or X.shape[1] != len(feature_names):
         raise ValueError("Unexpected feature matrix shape for {}".format(design))
@@ -65,8 +85,11 @@ def _load_design(task, engine, design, feature_names):
 
 
 def _sample_for_cv(X, y, design):
+    """Deterministically cap a design's CV rows while retaining full test data."""
     if len(y) <= CV_SAMPLE_CAP:
         return X, y
+    # CRC32 avoids Python's process-randomized hash, so each design gets the
+    # same sample subset across independent runs.
     seed = SEED + zlib.crc32(design.encode("utf-8"))
     indices = np.sort(
         np.random.default_rng(seed).choice(len(y), CV_SAMPLE_CAP, replace=False)
@@ -75,11 +98,19 @@ def _sample_for_cv(X, y, design):
 
 
 def _tune_tree(train, class_edges):
+    """Select tree hyperparameters using three folds grouped by design.
+
+    Every class boundary is computed before this function from training
+    designs only. Folds also contain whole designs, so samples from one design
+    cannot appear in both a fold's fit and validation sets.
+    """
     cv_data = {}
     for design, (X, delay_ns) in train.items():
         y = np.digitize(delay_ns, class_edges).astype(np.int8)
         cv_data[design] = _sample_for_cv(X, y, design)
 
+    # Interleave large designs across folds to reduce imbalance in sample
+    # counts while preserving design-level separation.
     designs_by_size = sorted(train, key=lambda design: -len(train[design][1]))
     fold_for_design = {
         design: index % CV_FOLDS for index, design in enumerate(designs_by_size)
@@ -104,6 +135,8 @@ def _tune_tree(train, class_edges):
                 X_valid, y_valid = cv_data[design]
                 prediction = tree.predict(X_valid)
                 cm = confusion_matrix(y_valid, prediction, labels=CLASS_IDS)
+                # Score each design equally, rather than allowing a large
+                # design to dominate the hyperparameter choice by row count.
                 design_scores.append(_metrics_from_confusion(cm)["macro_f1"])
 
         score = float(np.mean(design_scores))
@@ -116,6 +149,11 @@ def _tune_tree(train, class_edges):
 
 
 def _metrics_from_confusion(cm):
+    """Calculate fixed-five-class metrics directly from a confusion matrix.
+
+    Explicitly retaining all five classes gives stable metric columns even
+    when a particular design contains no examples of one or more classes.
+    """
     cm = np.asarray(cm, dtype=np.int64)
     true_support = cm.sum(axis=1)
     predicted_support = cm.sum(axis=0)
@@ -148,13 +186,18 @@ def _metrics_from_confusion(cm):
 
 
 def evaluate(y_true, y_pred):
-    """Return classification metrics and the fixed five-class confusion matrix."""
+    """Return classification metrics and the fixed five-class confusion matrix.
+
+    Metrics for a design or for all held-out designs pooled together can be
+    calculated through this same path.
+    """
     cm = confusion_matrix(y_true, y_pred, labels=CLASS_IDS)
     return _metrics_from_confusion(cm), cm
 
 
 def _metrics_row(design, cm, params, cv_score, feature_set, train_designs,
                  class_edges):
+    """Flatten aggregate and per-class scores into one CSV-compatible row."""
     result = _metrics_from_confusion(cm)
     row = {
         "design": design,
@@ -172,6 +215,7 @@ def _metrics_row(design, cm, params, cv_score, feature_set, train_designs,
         row["{}_recall".format(label)] = result["recall"][index]
         row["{}_f1".format(label)] = result["f1"][index]
         row["{}_support".format(label)] = int(result["support"][index])
+        # The last class is unbounded above and therefore has no upper edge.
         row["edge_{}_upper_ns".format(label)] = (
             float(class_edges[index]) if index < len(class_edges) else ""
         )
@@ -184,6 +228,7 @@ def _metrics_row(design, cm, params, cv_score, feature_set, train_designs,
 
 
 def _write_metrics(path, rows):
+    """Write per-design rows followed by the pooled row."""
     fieldnames = list(rows[0])
     with path.open("w", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
@@ -193,6 +238,12 @@ def _write_metrics(path, rows):
 
 def _write_predictions(path, design, delay_ns, true_classes, predicted_classes,
                        probabilities, model_classes):
+    """Append one held-out design's per-sample labels and class probabilities.
+
+    A decision tree only returns probability columns for classes observed
+    during fitting. Expand those columns into the fixed C1-C5 order so the CSV
+    schema is identical for every task and model.
+    """
     fields = [
         "design", "sample_index", "delay_ns", "true_class", "true_class_name",
         "predicted_class", "predicted_class_name", "correct",
@@ -226,6 +277,9 @@ def _write_predictions(path, design, delay_ns, true_classes, predicted_classes,
 
 
 def _save_visualizations(output_dir, tree, feature_names, pooled_cm, design_rows):
+    """Save tree, pooled confusion, per-design score, and feature plots."""
+    # Limit the displayed tree depth for readability; the fitted estimator
+    # itself remains at the CV-selected maximum depth.
     fig, ax = plt.subplots(figsize=(24, 12))
     plot_tree(
         tree,
@@ -240,6 +294,7 @@ def _save_visualizations(output_dir, tree, feature_names, pooled_cm, design_rows
     fig.savefig(output_dir / "decision_tree.png", dpi=250, bbox_inches="tight")
     plt.close(fig)
 
+    # Counts in this matrix are pooled over all seven held-out designs.
     fig, ax = plt.subplots(figsize=(6, 5))
     image = ax.imshow(pooled_cm, cmap="Blues")
     fig.colorbar(image, ax=ax, label="samples")
@@ -259,6 +314,7 @@ def _save_visualizations(output_dir, tree, feature_names, pooled_cm, design_rows
     fig.savefig(output_dir / "confusion_matrix.png", dpi=250, bbox_inches="tight")
     plt.close(fig)
 
+    # Display each held-out design's macro-F1 separately.
     ordered = sorted(design_rows, key=lambda row: row["design"])
     fig, ax = plt.subplots(figsize=(9, 4))
     ax.bar(
@@ -272,6 +328,8 @@ def _save_visualizations(output_dir, tree, feature_names, pooled_cm, design_rows
     fig.savefig(output_dir / "design_macro_f1.png", dpi=250, bbox_inches="tight")
     plt.close(fig)
 
+    # Show up to the twenty most informative inputs, in ascending order for
+    # a readable horizontal bar chart.
     order = np.argsort(tree.feature_importances_)[-20:]
     fig, ax = plt.subplots(figsize=(8, max(4, 0.3 * len(order))))
     ax.barh(
@@ -287,6 +345,7 @@ def _save_visualizations(output_dir, tree, feature_names, pooled_cm, design_rows
 
 def run_task(folder_name, task, engine, feature_set, train_designs,
              test_designs, result_dir):
+    """Fit, evaluate, and save all outputs for one delay-prediction task."""
     feature_names = list(task.featsets[feature_set])
     output_dir = result_dir / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +356,8 @@ def run_task(folder_name, task, engine, feature_set, train_designs,
         for design in train_designs
     }
     train_delays = np.concatenate([train[design][1] for design in train_designs])
+    # Five equal-frequency bins are derived exclusively from the concatenated
+    # training-design delays and reused unchanged for CV, fit, and test.
     class_edges = np.quantile(
         train_delays, np.linspace(0, 1, N_CLASSES + 1)[1:-1]
     )
@@ -307,6 +368,7 @@ def run_task(folder_name, task, engine, feature_set, train_designs,
         cv_score, best_params
     ))
 
+    # The bins use four internal cut points and produce class IDs 0 through 4.
     y_train = np.concatenate([
         np.digitize(train[design][1], class_edges).astype(np.int8)
         for design in train_designs
@@ -318,6 +380,7 @@ def run_task(folder_name, task, engine, feature_set, train_designs,
     del X_train, y_train
 
     predictions_path = output_dir / "pooled_predictions.csv"
+    # Do not accidentally append this run's predictions to an older run.
     if predictions_path.exists():
         predictions_path.unlink()
     metric_rows = []
@@ -346,6 +409,8 @@ def run_task(folder_name, task, engine, feature_set, train_designs,
         ))
         del X_test, delay_ns, y_true, y_pred, probabilities
 
+    # Summing confusion matrices pools the individual predictions without
+    # weighting designs equally; the resulting summary is sample-weighted.
     metric_rows.append(_metrics_row(
         "POOLED", pooled_cm, best_params, cv_score, feature_set,
         train_designs, class_edges,
@@ -360,12 +425,14 @@ def run_task(folder_name, task, engine, feature_set, train_designs,
 
 
 def main():
+    """Load the project extractors, obtain their split, and run both tasks."""
     net_delay_file, cell_delay_file = paths.paths().dependency_paths()
     net_engine = _load_module("decision_tree_net_kmeans", net_delay_file)
     cell_module = _load_module("decision_tree_cell_kmeans", cell_delay_file)
 
     train_designs = sorted(net_engine.train_data_keys)
     test_designs = sorted(net_engine.test_data_keys)
+    # Fail clearly if the extractor's canonical split changes unexpectedly.
     if len(train_designs) != 14 or len(test_designs) != 7:
         raise ValueError("Expected the existing 14/7 split across 21 designs")
 
